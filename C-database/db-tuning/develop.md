@@ -5,7 +5,7 @@
 ### 必要条件
 - Docker Desktop
 - PostgreSQL 15.x
-- pgAdmin 4
+- Go 1.21以上
 
 ### セットアップ手順
 1. データベースの起動
@@ -13,63 +13,186 @@
 docker-compose up -d
 ```
 
-2. 接続確認
+2. テストデータの投入
 ```bash
-psql -h localhost -U postgres
+./scripts/load-test-data.sh
 ```
 
 ## アーキテクチャ
 
-### チューニング対象
-- クエリパフォーマンス
-- インデックス最適化
-- メモリ使用量
-- ディスクI/O
+### コンポーネント
+- データベースサーバー
+- アプリケーションサーバー
+- モニタリングツール
 
 ### 技術スタック
 - PostgreSQL
-- pgAdmin
-- パフォーマンスモニタリングツール
+- Go
+- GORM
+- Docker
 
 ## 開発フロー
 
-### パフォーマンス分析
-1. スロークエリの特定
-2. 実行計画の分析
-3. ボトルネックの特定
+### スロークエリの特定
+```go
+// スロークエリのログ設定
+type SlowQueryLogger struct {
+    Threshold time.Duration
+    Logger    *log.Logger
+}
 
-### 最適化手順
-```sql
--- 実行計画の確認
-EXPLAIN ANALYZE SELECT * FROM users WHERE email = 'test@example.com';
+func (l *SlowQueryLogger) LogQuery(query string, duration time.Duration) {
+    if duration > l.Threshold {
+        l.Logger.Printf("Slow query detected (%.2fs): %s", duration.Seconds(), query)
+    }
+}
 
--- インデックスの作成
-CREATE INDEX idx_users_email ON users(email);
+// クエリの実行と計測
+func (db *DB) ExecuteQuery(query string, args ...interface{}) ([]map[string]interface{}, error) {
+    start := time.Now()
+    
+    rows, err := db.Query(query, args...)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    
+    duration := time.Since(start)
+    db.slowQueryLogger.LogQuery(query, duration)
+    
+    // 結果の取得
+    var results []map[string]interface{}
+    columns, err := rows.Columns()
+    if err != nil {
+        return nil, err
+    }
+    
+    for rows.Next() {
+        row := make(map[string]interface{})
+        values := make([]interface{}, len(columns))
+        valuePtrs := make([]interface{}, len(columns))
+        
+        for i := range columns {
+            valuePtrs[i] = &values[i]
+        }
+        
+        if err := rows.Scan(valuePtrs...); err != nil {
+            return nil, err
+        }
+        
+        for i, col := range columns {
+            row[col] = values[i]
+        }
+        
+        results = append(results, row)
+    }
+    
+    return results, nil
+}
+```
+
+### インデックスの設計と実装
+```go
+// インデックスの作成
+func (db *DB) CreateIndex(table, column string) error {
+    indexName := fmt.Sprintf("idx_%s_%s", table, column)
+    query := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", indexName, table, column)
+    
+    _, err := db.Exec(query)
+    return err
+}
+
+// インデックスの分析
+func (db *DB) AnalyzeIndexUsage() ([]map[string]interface{}, error) {
+    query := `
+        SELECT
+            schemaname,
+            tablename,
+            indexname,
+            idx_scan,
+            idx_tup_read,
+            idx_tup_fetch
+        FROM
+            pg_stat_user_indexes
+        ORDER BY
+            idx_scan DESC
+    `
+    
+    return db.ExecuteQuery(query)
+}
+```
+
+### 実行計画の分析
+```go
+// 実行計画の取得
+func (db *DB) GetExecutionPlan(query string, args ...interface{}) (string, error) {
+    explainQuery := fmt.Sprintf("EXPLAIN ANALYZE %s", query)
+    
+    rows, err := db.Query(explainQuery, args...)
+    if err != nil {
+        return "", err
+    }
+    defer rows.Close()
+    
+    var plan strings.Builder
+    for rows.Next() {
+        var line string
+        if err := rows.Scan(&line); err != nil {
+            return "", err
+        }
+        plan.WriteString(line + "\n")
+    }
+    
+    return plan.String(), nil
+}
+
+// 実行計画の分析
+func (db *DB) AnalyzeQueryPerformance(query string, args ...interface{}) (*QueryAnalysis, error) {
+    plan, err := db.GetExecutionPlan(query, args...)
+    if err != nil {
+        return nil, err
+    }
+    
+    analysis := &QueryAnalysis{
+        Plan: plan,
+    }
+    
+    // 実行計画の解析
+    if strings.Contains(plan, "Seq Scan") {
+        analysis.Suggestions = append(analysis.Suggestions, "シーケンシャルスキャンが検出されました。インデックスの追加を検討してください。")
+    }
+    
+    if strings.Contains(plan, "Nested Loop") {
+        analysis.Suggestions = append(analysis.Suggestions, "ネステッドループが検出されました。結合条件の最適化を検討してください。")
+    }
+    
+    return analysis, nil
+}
 ```
 
 ## パフォーマンス最適化
 
 ### クエリ最適化
 - インデックスの活用
-- クエリの書き換え
-- パーティショニング
+- 結合の最適化
+- サブクエリの最適化
 
 ### 設定最適化
-- バッファサイズ
-- ワークメモリ
-- メンテナンスワークメモリ
+- メモリ設定
+- ディスクI/O設定
+- 接続設定
 
 ## モニタリング
 
-### パフォーマンスメトリクス
+### パフォーマンスモニタリング
 - クエリ実行時間
+- リソース使用率
 - キャッシュヒット率
-- ディスクI/O
 
-### リソース使用率
+### リソースモニタリング
 - CPU使用率
 - メモリ使用量
-- ディスク使用量
+- ディスクI/O
 
 ## トラブルシューティング
 
@@ -80,7 +203,7 @@ CREATE INDEX idx_users_email ON users(email);
 
 ### 解決方法
 - クエリの最適化
-- インデックスの見直し
+- インデックスの追加
 - 設定の調整
 
 ## メンテナンス
@@ -90,10 +213,10 @@ CREATE INDEX idx_users_email ON users(email);
 - インデックスの再構築
 - 統計情報の更新
 
-### バックアップ
-- フルバックアップ
-- 増分バックアップ
-- ポイントインタイムリカバリ
+### バックアップと復旧
+- バックアップ戦略
+- 復旧手順
+- テスト復旧
 
 ## セキュリティ
 

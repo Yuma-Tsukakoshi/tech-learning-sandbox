@@ -5,7 +5,7 @@
 ### 必要条件
 - Docker Desktop
 - MongoDB 6.0以上
-- MongoDB Compass（GUIツール）
+- Go 1.21以上
 
 ### セットアップ手順
 1. MongoDBの起動
@@ -27,25 +27,56 @@ mongosh
 
 ### 技術スタック
 - MongoDB
-- Mongoose（Node.js用ODM）
-- MongoDB Compass
+- MongoDB Go Driver
+- Docker
 
 ## 開発フロー
 
 ### スキーマ定義
-```javascript
-const userSchema = new Schema({
-  name: String,
-  email: String,
-  createdAt: Date
-});
+```go
+type User struct {
+    ID        primitive.ObjectID `bson:"_id,omitempty"`
+    Name      string            `bson:"name"`
+    Email     string            `bson:"email"`
+    CreatedAt time.Time         `bson:"created_at"`
+}
 ```
 
 ### CRUD操作
-- 作成（Create）
-- 読み取り（Read）
-- 更新（Update）
-- 削除（Delete）
+```go
+// 接続設定
+client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI("mongodb://localhost:27017"))
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Disconnect(context.TODO())
+
+// コレクションの取得
+collection := client.Database("test").Collection("users")
+
+// ドキュメントの作成
+user := User{
+    Name:      "John Doe",
+    Email:     "john@example.com",
+    CreatedAt: time.Now(),
+}
+result, err := collection.InsertOne(context.TODO(), user)
+
+// ドキュメントの検索
+var foundUser User
+err = collection.FindOne(context.TODO(), bson.M{"email": "john@example.com"}).Decode(&foundUser)
+
+// ドキュメントの更新
+update := bson.M{
+    "$set": bson.M{
+        "name": "John Smith",
+    },
+}
+_, err = collection.UpdateOne(context.TODO(), bson.M{"email": "john@example.com"}, update)
+
+// ドキュメントの削除
+_, err = collection.DeleteOne(context.TODO(), bson.M{"email": "john@example.com"})
+```
 
 ## パフォーマンス最適化
 

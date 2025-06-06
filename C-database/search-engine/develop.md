@@ -5,7 +5,7 @@
 ### 必要条件
 - Docker Desktop
 - Elasticsearch 8.x
-- Kibana 8.x
+- Go 1.21以上
 
 ### セットアップ手順
 1. Elasticsearchの起動
@@ -27,30 +27,83 @@ curl http://localhost:9200
 
 ### 技術スタック
 - Elasticsearch
-- Elasticsearchクライアント
-- アナライザーとトークナイザー
+- Elasticsearch Go Client
+- Docker
 
 ## 開発フロー
 
 ### インデックス作成
-```json
-PUT /my_index
-{
-  "mappings": {
-    "properties": {
-      "title": { "type": "text" },
-      "content": { "type": "text" },
-      "created_at": { "type": "date" }
-    }
-  }
+```go
+// クライアントの初期化
+cfg := elasticsearch.Config{
+    Addresses: []string{
+        "http://localhost:9200",
+    },
 }
+es, err := elasticsearch.NewClient(cfg)
+if err != nil {
+    log.Fatalf("Error creating the client: %s", err)
+}
+
+// インデックスの作成
+res, err := es.Indices.Create(
+    "my_index",
+    es.Indices.Create.WithBody(strings.NewReader(`{
+        "mappings": {
+            "properties": {
+                "title": { "type": "text" },
+                "content": { "type": "text" },
+                "created_at": { "type": "date" }
+            }
+        }
+    }`)),
+)
+if err != nil {
+    log.Fatalf("Error creating the index: %s", err)
+}
+defer res.Body.Close()
+```
+
+### ドキュメントの登録
+```go
+// ドキュメントの登録
+doc := `{
+    "title": "テストドキュメント",
+    "content": "これはテスト用のドキュメントです。",
+    "created_at": "2024-03-20T12:00:00Z"
+}`
+
+res, err := es.Index(
+    "my_index",
+    strings.NewReader(doc),
+    es.Index.WithDocumentID("1"),
+)
+if err != nil {
+    log.Fatalf("Error indexing document: %s", err)
+}
+defer res.Body.Close()
 ```
 
 ### 検索クエリ
-- マッチクエリ
-- フレーズクエリ
-- ファジークエリ
-- 範囲クエリ
+```go
+// 検索クエリの実行
+query := `{
+    "query": {
+        "match": {
+            "content": "テスト"
+        }
+    }
+}`
+
+res, err := es.Search(
+    es.Search.WithIndex("my_index"),
+    es.Search.WithBody(strings.NewReader(query)),
+)
+if err != nil {
+    log.Fatalf("Error searching documents: %s", err)
+}
+defer res.Body.Close()
+```
 
 ## パフォーマンス最適化
 

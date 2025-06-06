@@ -5,7 +5,7 @@
 ### 必要条件
 - Docker Desktop
 - RabbitMQ 3.12以上
-- Node.js 18.x以上（アプリケーション開発用）
+- Go 1.21以上
 
 ### セットアップ手順
 1. RabbitMQの起動
@@ -31,50 +31,120 @@ http://localhost:15672
 
 ### 技術スタック
 - RabbitMQ
-- amqplib（Node.js用クライアント）
+- Go AMQP Client
 - Docker
 
 ## 開発フロー
 
 ### プロデューサーの実装
-```javascript
-const amqp = require('amqplib');
+```go
+package main
 
-async function publishMessage() {
-  const connection = await amqp.connect('amqp://localhost');
-  const channel = await connection.createChannel();
-  
-  const queue = 'task_queue';
-  const msg = 'Hello World!';
-  
-  channel.assertQueue(queue, {
-    durable: true
-  });
-  
-  channel.sendToQueue(queue, Buffer.from(msg));
-  console.log(" [x] Sent %s", msg);
+import (
+    "log"
+    "github.com/streadway/amqp"
+)
+
+func main() {
+    conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+    if err != nil {
+        log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+    }
+    defer conn.Close()
+
+    ch, err := conn.Channel()
+    if err != nil {
+        log.Fatalf("Failed to open a channel: %v", err)
+    }
+    defer ch.Close()
+
+    q, err := ch.QueueDeclare(
+        "task_queue", // name
+        true,         // durable
+        false,        // delete when unused
+        false,        // exclusive
+        false,        // no-wait
+        nil,          // arguments
+    )
+    if err != nil {
+        log.Fatalf("Failed to declare a queue: %v", err)
+    }
+
+    body := "Hello World!"
+    err = ch.Publish(
+        "",     // exchange
+        q.Name, // routing key
+        false,  // mandatory
+        false,  // immediate
+        amqp.Publishing{
+            DeliveryMode: amqp.Persistent,
+            ContentType:  "text/plain",
+            Body:        []byte(body),
+        })
+    if err != nil {
+        log.Fatalf("Failed to publish a message: %v", err)
+    }
+    log.Printf(" [x] Sent %s", body)
 }
 ```
 
 ### コンシューマーの実装
-```javascript
-const amqp = require('amqplib');
+```go
+package main
 
-async function consumeMessage() {
-  const connection = await amqp.connect('amqp://localhost');
-  const channel = await connection.createChannel();
-  
-  const queue = 'task_queue';
-  
-  channel.assertQueue(queue, {
-    durable: true
-  });
-  
-  channel.consume(queue, (msg) => {
-    console.log(" [x] Received %s", msg.content.toString());
-  }, {
-    noAck: true
-  });
+import (
+    "log"
+    "github.com/streadway/amqp"
+)
+
+func main() {
+    conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+    if err != nil {
+        log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+    }
+    defer conn.Close()
+
+    ch, err := conn.Channel()
+    if err != nil {
+        log.Fatalf("Failed to open a channel: %v", err)
+    }
+    defer ch.Close()
+
+    q, err := ch.QueueDeclare(
+        "task_queue", // name
+        true,         // durable
+        false,        // delete when unused
+        false,        // exclusive
+        false,        // no-wait
+        nil,          // arguments
+    )
+    if err != nil {
+        log.Fatalf("Failed to declare a queue: %v", err)
+    }
+
+    msgs, err := ch.Consume(
+        q.Name, // queue
+        "",     // consumer
+        true,   // auto-ack
+        false,  // exclusive
+        false,  // no-local
+        false,  // no-wait
+        nil,    // args
+    )
+    if err != nil {
+        log.Fatalf("Failed to register a consumer: %v", err)
+    }
+
+    forever := make(chan bool)
+
+    go func() {
+        for d := range msgs {
+            log.Printf("Received a message: %s", d.Body)
+        }
+    }()
+
+    log.Printf(" [*] Waiting for messages. To exit press CTRL+C")
+    <-forever
 }
 ```
 
